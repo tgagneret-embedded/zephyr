@@ -569,6 +569,36 @@ Build files located in a ``MODULE_EXT_ROOT`` can be described as:
 This allows control of the build inclusion to be described externally to the
 Zephyr module.
 
+SBOM integration
+====================
+
+The module description file :file:`zephyr/module.yml` can be used to improve the
+generated SBOM and vulnerability monitoring.
+
+The version and the CPE associated to the module can be provided using
+``version`` and ``cpe`` fields:
+
+.. code-block:: yaml
+
+   version: <module-version>
+   cpe: <module-cpe>
+
+If your module needs to track CVE using an external CPE (e.g your module is
+forked from an other repository), you can use the ``vulnerabilities`` section.
+It contains the field ``remote_cpes`` that contains a list of CPE that needs to
+be monitored for your module.
+
+.. code-block:: yaml
+
+   vulnerabilities:
+     remote_cpes:
+       - <module-related-cpe>
+       - <an-other-module-related-cpe>
+
+.. note::
+   CPE fields must follow the CPE schema provided by `NVD
+   <https://csrc.nist.gov/projects/security-content-automation-protocol/specifications/cpe>`_.
+
 Build system integration
 ========================
 

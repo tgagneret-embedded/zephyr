@@ -39,6 +39,12 @@ mapping:
   name:
     required: false
     type: str
+  version:
+    required: false
+    type: str
+  cpe:
+    required: false
+    type: str
   build:
     required: false
     type: map
@@ -147,6 +153,15 @@ mapping:
           doc-url:
             required: false
             type: str
+  vulnerabilities:
+     required: false
+     type: map
+     mapping:
+       remote_cpes:
+         required: false
+         type: seq
+         sequence:
+            - type: str
 '''
 
 MODULE_YML_PATH = PurePath('zephyr/module.yml')

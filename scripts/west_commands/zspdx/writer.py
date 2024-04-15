@@ -17,7 +17,7 @@ CPE23TYPE_REGEX = (
 )
 PURL_REGEX = r"^pkg:.+(\/.+)?\/.+(@.+)?(\?.+)?(#.+)?$"
 
-# Output tag-value SPDX 2.2 content for the given Relationship object.
+# Output tag-value SPDX 2.3 content for the given Relationship object.
 # Arguments:
 #   1) f: file handle for SPDX document
 #   2) rln: Relationship object being described
@@ -51,6 +51,18 @@ FileChecksum: SHA1: {bf.sha1}
             writeRelationshipSPDX(f, rln)
         f.write("\n")
 
+def generateDowloadUrl(url, revision):
+    # Only git is supported
+    # walker.py only parse revision if it's from git repositiory
+    if len(revision) == 0 or url.startswith("git://"):
+        return url
+
+    url = url.replace("https://", "git+https://")
+    url = url.replace("http://", "git+http://")
+    url = "@".join([url, revision])
+
+    return url
+
 # Output tag-value SPDX 2.3 content for the given Package object.
 # Arguments:
 #   1) f: file handle for SPDX document
@@ -66,12 +78,12 @@ PackageLicenseConcluded: {pkg.concludedLicense}
 PackageCopyrightText: {pkg.cfg.copyrightText}
 """)
 
-<<<<<<< HEAD
     if pkg.cfg.primaryPurpose != "":
         f.write(f"PrimaryPackagePurpose: {pkg.cfg.primaryPurpose}\n")
-=======
+
     if len(pkg.cfg.url) > 0:
-        f.write(f"PackageDownloadLocation: {pkg.cfg.url}\n")
+        downloadUrl = generateDowloadUrl(pkg.cfg.url, pkg.cfg.revision)
+        f.write(f"PackageDownloadLocation: {downloadUrl}\n")
     else:
         f.write("PackageDownloadLocation: NOASSERTION\n")
 
@@ -87,7 +99,6 @@ PackageCopyrightText: {pkg.cfg.copyrightText}
             f.write(f"ExternalRef: PACKAGE_MANAGER purl {ref}\n")
         else:
             log.wrn(f"Unknown external reference ({ref})")
->>>>>>> 82c30469c5 (scripts: zephyr_module: Add URL, version to SPDX)
 
     # flag whether files analyzed / any files present
     if len(pkg.files) > 0:

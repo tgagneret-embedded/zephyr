@@ -452,7 +452,7 @@ def _create_meta_project(project_path):
             remotes_name = stdout.rstrip().split('\n')
 
         remote_url = None
-        if len(remotes_name) == 1:
+        if len(remotes_name) >= 1:
             remote = remotes_name[0]
             popen = subprocess.Popen(['git', 'remote', 'get-url', remote],
                                      stdout=subprocess.PIPE,
@@ -484,12 +484,13 @@ def _create_meta_project(project_path):
         return tags
 
     workspace_dirty = False
+    workspace_off = False
     path = PurePath(project_path).as_posix()
 
     revision, dirty = git_revision(path)
     workspace_dirty |= dirty
-    remote, dirty = git_remote(path)
-    workspace_dirty |= dirty
+    remote, off = git_remote(path)
+    workspace_off |= off
     tags = git_tags(path, revision)
 
     meta_project = {'path': path,
@@ -501,7 +502,7 @@ def _create_meta_project(project_path):
     if tags:
         meta_project['tags'] = tags
 
-    return meta_project, workspace_dirty
+    return meta_project, workspace_dirty, workspace_off
 
 
 def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
@@ -522,31 +523,42 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
     workspace_extra = extra_modules is not None
     workspace_off = False
 
-    zephyr_project, zephyr_dirty = _create_meta_project(zephyr_base)
+    zephyr_project, zephyr_dirty, zephyr_off = _create_meta_project(zephyr_base)
+    print(zephyr_off)
 
     meta['zephyr'] = zephyr_project
     meta['workspace'] = {}
+
+    workspace_off |= zephyr_off
     workspace_dirty |= zephyr_dirty
+
+    if zephyr_off:
+        meta['zephyr']['revision'] += '-off'
 
     if west_projs is not None:
         from west.manifest import MANIFEST_REV_BRANCH
         projects = west_projs['projects']
         meta_projects = []
 
-        manifest_project, manifest_dirty = _create_meta_project(
+        manifest_project, manifest_dirty, manifest_off = _create_meta_project(
             projects[0].posixpath)
         workspace_dirty |= manifest_dirty
+        workspace_off |= manifest_off
         meta_projects.append(manifest_project)
 
         for project in projects[1:]:
-            meta_project, dirty = _create_meta_project(project.posixpath)
+            meta_project, dirty, off = _create_meta_project(project.posixpath)
             workspace_dirty |= dirty
+            workspace_off |= off
             meta_projects.append(meta_project)
 
             if project.sha(MANIFEST_REV_BRANCH) != meta_project['revision']:
                 meta_project['revision'] += '-off'
                 workspace_off = True
             if meta_project.get('remote') and project.url != meta_project['remote']:
+                # Force manifest URL and set commit as 'off'
+                meta_project['url'] = project.url
+                meta_project['revision'] += '-off'
                 workspace_off = True
 
         meta.update({'west': {'manifest': west_projs['manifest_path'],
@@ -555,7 +567,10 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
 
     meta_projects = []
     for module in modules:
-        meta_module, dirty = _create_meta_project(module.project)
+        meta_module, dirty, off = _create_meta_project(module.project)
+        workspace_dirty |= dirty
+        workspace_off |= off
+
         meta_module['name'] = module.meta.get('name')
         if module.meta.get('security'):
             meta_module['security'] = module.meta.get('security')
@@ -572,7 +587,7 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
             zephyr_revision += '-dirty'
         if workspace_extra:
             zephyr_revision += '-extra'
-        if workspace_off:
+        if workspace_off and not zephyr_off:
             zephyr_revision += '-off'
         zephyr_project.update({'revision': zephyr_revision})
 
@@ -582,7 +597,7 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
                 manifest_revision += '-dirty'
             if workspace_extra:
                 manifest_revision += '-extra'
-            if workspace_off:
+            if workspace_off and not manifest_off:
                 manifest_revision += '-off'
             manifest_project.update({'revision': manifest_revision})
 

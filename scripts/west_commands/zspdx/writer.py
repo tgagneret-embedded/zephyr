@@ -54,14 +54,10 @@ FileChecksum: SHA1: {bf.sha1}
 def generateDowloadUrl(url, revision):
     # Only git is supported
     # walker.py only parse revision if it's from git repositiory
-    if len(revision) == 0 or url.startswith("git://"):
+    if len(revision) == 0:
         return url
 
-    url = url.replace("https://", "git+https://")
-    url = url.replace("http://", "git+http://")
-    url = "@".join([url, revision])
-
-    return url
+    return f'git+{url}@{revision}'
 
 # Output tag-value SPDX 2.3 content for the given Package object.
 # Arguments:

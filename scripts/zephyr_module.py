@@ -524,7 +524,6 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
     workspace_off = False
 
     zephyr_project, zephyr_dirty, zephyr_off = _create_meta_project(zephyr_base)
-    print(zephyr_off)
 
     meta['zephyr'] = zephyr_project
     meta['workspace'] = {}
@@ -540,11 +539,26 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
         projects = west_projs['projects']
         meta_projects = []
 
-        manifest_project, manifest_dirty, manifest_off = _create_meta_project(
-            projects[0].posixpath)
-        workspace_dirty |= manifest_dirty
-        workspace_off |= manifest_off
-        meta_projects.append(manifest_project)
+        manifest_path = projects[0].posixpath
+
+        # Special treatment of manifest project
+        # Git information (remote/revision) are not provided by west for the Manifest (west.yml)
+        # To mitigate this, we check if we don't use the manifest from the zephyr repository or an other project.
+        # If it's from zephyr, reuse zephyr information
+        # If it's from an other project, ignore it, it will be added later
+        # If it's not found, we extract data manually (remote/revision) from the directory
+
+        if zephyr_base == manifest_path:
+            manifest_project = zephyr_project
+            manifest_dirty = zephyr_dirty
+            manifest_off = zephyr_off
+            meta_projects.append(manifest_project)
+        elif not [ prj for prj in projects[1:] if prj.posixpath == manifest_path ]:
+            manifest_project, manifest_dirty, manifest_off = _create_meta_project(
+                projects[0].posixpath)
+            workspace_dirty |= manifest_dirty
+            workspace_off |= manifest_off
+            meta_projects.append(manifest_project)
 
         for project in projects[1:]:
             meta_project, dirty, off = _create_meta_project(project.posixpath)
@@ -817,6 +831,8 @@ def main():
                             args.extra_modules, args.meta_state_propagate)
 
         with open(args.meta_out, 'w', encoding="utf-8") as fp:
+            # Ignore references and insert data instead
+            yaml.Dumper.ignore_aliases = lambda self, data: True
             fp.write(yaml.dump(meta))
 
 

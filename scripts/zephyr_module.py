@@ -452,7 +452,9 @@ def _create_meta_project(project_path):
             remotes_name = stdout.rstrip().split('\n')
 
         remote_url = None
-        if len(remotes_name) >= 1:
+
+        # If more than one remote, do not return any remote
+        if len(remotes_name) == 1:
             remote = remotes_name[0]
             popen = subprocess.Popen(['git', 'remote', 'get-url', remote],
                                      stdout=subprocess.PIPE,
@@ -464,7 +466,7 @@ def _create_meta_project(project_path):
             if not (popen.returncode or stderr):
                 remote_url = stdout.rstrip()
 
-        return remote_url, len(remotes_name) > 1
+        return remote_url
 
     def git_tags(path, revision):
         if not revision or len(revision) == 0:
@@ -489,8 +491,7 @@ def _create_meta_project(project_path):
 
     revision, dirty = git_revision(path)
     workspace_dirty |= dirty
-    remote, off = git_remote(path)
-    workspace_off |= off
+    remote = git_remote(path)
     tags = git_tags(path, revision)
 
     meta_project = {'path': path,
@@ -502,7 +503,13 @@ def _create_meta_project(project_path):
     if tags:
         meta_project['tags'] = tags
 
-    return meta_project, workspace_dirty, workspace_off
+    return meta_project, workspace_dirty
+
+
+def _get_meta_project(meta_projects_list, project_path):
+    projects = [ prj for prj in meta_projects_list[1:] if prj["path"] == project_path ]
+
+    return projects[0] if len(projects) == 1 else None
 
 
 def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
@@ -523,16 +530,17 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
     workspace_extra = extra_modules is not None
     workspace_off = False
 
-    zephyr_project, zephyr_dirty, zephyr_off = _create_meta_project(zephyr_base)
-
-    meta['zephyr'] = zephyr_project
-    meta['workspace'] = {}
+    zephyr_project, zephyr_dirty = _create_meta_project(zephyr_base)
+    zephyr_off = (zephyr_project.get("remote") == None)
 
     workspace_off |= zephyr_off
     workspace_dirty |= zephyr_dirty
 
     if zephyr_off:
-        meta['zephyr']['revision'] += '-off'
+        zephyr_project['revision'] += '-off'
+
+    meta['zephyr'] = zephyr_project
+    meta['workspace'] = {}
 
     if west_projs is not None:
         from west.manifest import MANIFEST_REV_BRANCH
@@ -548,49 +556,72 @@ def process_meta(zephyr_base, west_projs, modules, extra_modules=None,
         # If it's from an other project, ignore it, it will be added later
         # If it's not found, we extract data manually (remote/revision) from the directory
 
+        manifest_project = None
+        manifest_dirty = False
+        manifest_off = False
+
         if zephyr_base == manifest_path:
             manifest_project = zephyr_project
             manifest_dirty = zephyr_dirty
             manifest_off = zephyr_off
-            meta_projects.append(manifest_project)
         elif not [ prj for prj in projects[1:] if prj.posixpath == manifest_path ]:
-            manifest_project, manifest_dirty, manifest_off = _create_meta_project(
+            manifest_project, manifest_dirty = _create_meta_project(
                 projects[0].posixpath)
-            workspace_dirty |= manifest_dirty
+            manifest_off = (manifest_project.get("remote") == None)
+            if manifest_off:
+                manifest_project["revision"] +=  "-off"
+
+        if manifest_project:
             workspace_off |= manifest_off
+            workspace_dirty |= manifest_dirty
             meta_projects.append(manifest_project)
 
+        # Iterates on all projects except the first one (manifest)
         for project in projects[1:]:
-            meta_project, dirty, off = _create_meta_project(project.posixpath)
+            meta_project, dirty = _create_meta_project(project.posixpath)
             workspace_dirty |= dirty
-            workspace_off |= off
             meta_projects.append(meta_project)
 
-            if project.sha(MANIFEST_REV_BRANCH) != meta_project['revision']:
-                meta_project['revision'] += '-off'
-                workspace_off = True
-            if meta_project.get('remote') and project.url != meta_project['remote']:
+            off = False
+            if not meta_project.get("remote") or project.sha(MANIFEST_REV_BRANCH) != meta_project['revision']:
+                off = True
+            if not meta_project.get('remote') or project.url != meta_project['remote']:
                 # Force manifest URL and set commit as 'off'
                 meta_project['url'] = project.url
+                off = True
+
+            if off:
                 meta_project['revision'] += '-off'
-                workspace_off = True
+                workspace_off |= off
+
+            # If manifest is in project, updates related variables
+            if project.posixpath == manifest_path:
+                manifest_dirty |= dirty
+                manifest_off |= off
+                manifest_project = meta_project
 
         meta.update({'west': {'manifest': west_projs['manifest_path'],
                               'projects': meta_projects}})
         meta['workspace'].update({'off': workspace_off})
 
-    meta_projects = []
+    # Iterates on all modules
+    meta_modules = []
     for module in modules:
-        meta_module, dirty, off = _create_meta_project(module.project)
-        workspace_dirty |= dirty
-        workspace_off |= off
+        # Check if modules is not in projects
+        # It allows to have the "-off" flags since `modules` variable` does not provide URL/remote
+        meta_module = _get_meta_project(meta_projects, module.project)
+
+        if not meta_module:
+            meta_module, dirty = _create_meta_project(module.project)
+            workspace_dirty |= dirty
 
         meta_module['name'] = module.meta.get('name')
+
         if module.meta.get('security'):
             meta_module['security'] = module.meta.get('security')
-        meta_projects.append(meta_module)
+        meta_modules.append(meta_module)
 
-    meta['modules'] = meta_projects
+    meta['modules'] = meta_modules
 
     meta['workspace'].update({'dirty': workspace_dirty,
                               'extra': workspace_extra})

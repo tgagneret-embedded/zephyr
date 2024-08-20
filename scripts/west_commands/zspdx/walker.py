@@ -11,9 +11,48 @@ from west.util import west_topdir, WestNotFound
 
 from zspdx.cmakecache import parseCMakeCacheFile
 from zspdx.cmakefileapijson import parseReply
-from zspdx.datatypes import DocumentConfig, Document, File, PackageConfig, Package, RelationshipDataElementType, RelationshipData, Relationship
+from zspdx.datatypes import DocumentConfig, PackageConfig, RelationshipDataElementType, RelationshipData
+from zspdx.datatypes import Package as PackageZephyr
+from zspdx.datatypes import Document as DocumentZephyr
+from zspdx.datatypes import File as FileZephyr
+from zspdx.datatypes import Relationship as RelationshipZephyr
 from zspdx.getincludes import getCIncludes
 import zspdx.spdxids
+
+import logging
+from datetime import datetime
+from typing import List
+
+
+from spdx_tools.common.spdx_licensing import spdx_licensing
+from spdx_tools.spdx.model import (
+    Actor,
+    ActorType,
+    Checksum,
+    ChecksumAlgorithm,
+    CreationInfo,
+    Document,
+    ExternalPackageRef,
+    ExternalPackageRefCategory,
+    File,
+    FileType,
+    Package,
+    PackagePurpose,
+    PackageVerificationCode,
+    Relationship,
+    RelationshipType,
+    SpdxNoAssertion,
+)
+from spdx_tools.spdx.validation.document_validator import validate_full_spdx_document
+from spdx_tools.spdx.validation.validation_message import ValidationMessage
+from spdx_tools.spdx.writer.write_anything import write_file
+
+CPE23TYPE_REGEX = (
+    r'^cpe:2\.3:[aho\*\-](:(((\?*|\*?)([a-zA-Z0-9\-\._]|(\\[\\\*\?!"#$$%&\'\(\)\+,\/:;<=>@\[\]\^'
+    r"`\{\|}~]))+(\?*|\*?))|[\*\-])){5}(:(([a-zA-Z]{2,3}(-([a-zA-Z]{2}|[0-9]{3}))?)|[\*\-]))(:(((\?*"
+    r'|\*?)([a-zA-Z0-9\-\._]|(\\[\\\*\?!"#$$%&\'\(\)\+,\/:;<=>@\[\]\^`\{\|}~]))+(\?*|\*?))|[\*\-])){4}$'
+)
+PURL_REGEX = r"^pkg:.+(\/.+)?\/.+(@.+)?(\?.+)?(#.+)?$"
 
 # WalkerConfig contains configuration data for the Walker.
 class WalkerConfig:
@@ -183,7 +222,7 @@ class Walker:
         cfgApp.name = "app-sources"
         cfgApp.namespace = self.cfg.namespacePrefix + "/app"
         cfgApp.docRefID = "DocumentRef-app"
-        self.docApp = Document(cfgApp)
+        self.docApp = DocumentZephyr(cfgApp)
 
         # also set up app sources package
         cfgPackageApp = PackageConfig()
@@ -192,7 +231,7 @@ class Walker:
         cfgPackageApp.primaryPurpose = "SOURCE"
         # relativeBaseDir is app sources dir
         cfgPackageApp.relativeBaseDir = self.cm.paths_source
-        pkgApp = Package(cfgPackageApp, self.docApp)
+        pkgApp = PackageZephyr(cfgPackageApp, self.docApp)
         self.docApp.pkgs[pkgApp.cfg.spdxID] = pkgApp
 
         self._add_describe_relationship(self.docApp, cfgPackageApp)
@@ -203,7 +242,7 @@ class Walker:
         cfgBuild.name = "build"
         cfgBuild.namespace = self.cfg.namespacePrefix + "/build"
         cfgBuild.docRefID = "DocumentRef-build"
-        self.docBuild = Document(cfgBuild)
+        self.docBuild = DocumentZephyr(cfgBuild)
 
         # we'll create the build packages in walkTargets()
 
@@ -219,13 +258,45 @@ class Walker:
         # add it to pending relationships queue
         self.pendingRelationships.append(rd)
 
+    def _normalizeSPDXName(self, name):
+        # Replace "_" by "-" since it's not allowed in spdx ID
+        return name.replace("_", "-")
+
+    def _generateModuleName(self, name, suffix):
+        return self._normalizeSPDXName(name) + suffix
+
+    def _generateModuleRef(self, name, suffix):
+        return "SPDXRef-" + self._generateModuleName(name, suffix)
+
+    def generateDowloadUrl(self, url, revision):
+        # Only git is supported
+        # walker.py only parse revision if it's from git repositiory
+        if len(revision) == 0:
+            return url
+
+        return f'git+{url}@{revision}'
+
     def setupZephyrDocument(self, zephyr, modules):
+
+
+        creation_info = CreationInfo(
+            spdx_version="SPDX-2.3",
+            spdx_id="SPDXRef-DOCUMENT",
+            name="zephyr-sources",
+            data_license="CC0-1.0",
+            creators=[Actor(ActorType.TOOL, "Zephyr SPDX builder", None)],
+            document_namespace=self.cfg.namespacePrefix + "/zephyr-sources",
+            created=datetime.now(),
+        )
+        document = Document(creation_info)
+
         # set up zephyr document
         cfgZephyr = DocumentConfig()
         cfgZephyr.name = "zephyr-sources"
         cfgZephyr.namespace = self.cfg.namespacePrefix + "/zephyr"
         cfgZephyr.docRefID = "DocumentRef-zephyr"
-        self.docZephyr = Document(cfgZephyr)
+        self.docZephyr = DocumentZephyr(cfgZephyr)
+
 
         # relativeBaseDir is Zephyr sources topdir
         try:
@@ -240,12 +311,36 @@ class Walker:
         cfgPackageZephyr.spdxID = "SPDXRef-zephyr-sources"
         cfgPackageZephyr.relativeBaseDir = relativeBaseDir
 
+        package = Package(
+            name=self._generateModuleName("zephyr", "-sources"),
+            spdx_id=self._generateModuleRef("zephyr", "-sources"),
+            #version="2.2.1",
+            #supplier=Actor(ActorType.PERSON, "Jane Doe", "jane.doe@example.com"),
+            #originator=Actor(ActorType.ORGANIZATION, "some organization", "contact@example.com"),
+            #license_concluded=SpdxNoAssertion(),
+            #license_declared=SpdxNoAssertion(),
+            #copyright_text=SpdxNoAssertion(),
+            files_analyzed=False,
+            download_location=SpdxNoAssertion(),
+            primary_package_purpose=PackagePurpose.APPLICATION,
+        )
+
+        document.packages.append(package)
+
+
+        describes_relationship = Relationship("SPDXRef-DOCUMENT", RelationshipType.DESCRIBES, self._generateModuleRef("zephyr", "-sources"))
+        document.relationships.append(describes_relationship)
+
+
         zephyr_url = zephyr.get("remote", "")
         if zephyr_url:
             cfgPackageZephyr.url = zephyr_url
+            # TODO FIXME Remove get("revsion")
+            package.download_location = self.generateDowloadUrl(zephyr_url, zephyr.get("revision"))
 
         if zephyr.get("revision"):
             cfgPackageZephyr.revision = zephyr.get("revision")
+            package.version = zephyr.get("revision")
 
         purl = None
         zephyr_tags = zephyr.get("tags", "")
@@ -266,7 +361,7 @@ class Walker:
             cpe = f'cpe:2.3:o:zephyrproject:zephyr:{cfgPackageZephyr.version}:-:*:*:*:*:*:*'
             cfgPackageZephyr.externalReferences.append(cpe)
 
-        pkgZephyr = Package(cfgPackageZephyr, self.docZephyr)
+        pkgZephyr = PackageZephyr(cfgPackageZephyr, self.docZephyr)
         self.docZephyr.pkgs[pkgZephyr.cfg.spdxID] = pkgZephyr
 
         self._add_describe_relationship(self.docZephyr, cfgPackageZephyr)
@@ -288,16 +383,45 @@ class Walker:
             cfgPackageZephyrModule.relativeBaseDir = module_path
             cfgPackageZephyrModule.primaryPurpose = "SOURCE"
 
+
+
+
+            package = Package(
+                name=self._generateModuleName(module_name, "-sources"),
+                spdx_id=self._generateModuleRef(module_name, "-sources"),
+                #version="2.2.1",
+                #supplier=Actor(ActorType.PERSON, "Jane Doe", "jane.doe@example.com"),
+                #originator=Actor(ActorType.ORGANIZATION, "some organization", "contact@example.com"),
+                #license_concluded=SpdxNoAssertion(),
+                #license_declared=SpdxNoAssertion(),
+                #copyright_text=SpdxNoAssertion(),
+                files_analyzed=False,
+                download_location=SpdxNoAssertion(),
+                primary_package_purpose=PackagePurpose.LIBRARY,
+            )
+
+
             if module_revision:
                 cfgPackageZephyrModule.revision = module_revision
+                package.version = module_revision
 
             if module_url:
                 cfgPackageZephyrModule.url = module_url
+                package.download_location = self.generateDowloadUrl(module_url, module_revision)
 
-            pkgZephyrModule = Package(cfgPackageZephyrModule, self.docZephyr)
+
+            pkgZephyrModule = PackageZephyr(cfgPackageZephyrModule, self.docZephyr)
             self.docZephyr.pkgs[pkgZephyrModule.cfg.spdxID] = pkgZephyrModule
 
             self._add_describe_relationship(self.docZephyr, cfgPackageZephyrModule)
+
+
+            document.packages.append(package)
+
+        describes_relationship = Relationship("SPDXRef-DOCUMENT", RelationshipType.DESCRIBES, self._generateModuleRef(module_name, "-sources"))
+            document.relationships.append(describes_relationship)
+
+        write_file(document, "zephyr-sources.spdx")
 
         return True
 
@@ -315,7 +439,7 @@ class Walker:
         cfgPackageSDK.spdxID = "SPDXRef-sdk"
         # relativeBaseDir is SDK dir
         cfgPackageSDK.relativeBaseDir = self.sdkPath
-        pkgSDK = Package(cfgPackageSDK, self.docSDK)
+        pkgSDK = PackageZephyr(cfgPackageSDK, self.docSDK)
         self.docSDK.pkgs[pkgSDK.cfg.spdxID] = pkgSDK
 
         # create DESCRIBES relationship data
@@ -329,13 +453,45 @@ class Walker:
         # add it to pending relationships queue
         self.pendingRelationships.append(rd)
 
+    def _generateExternalRef(self, ref):
+        spdx_ref = None
+
+        if re.fullmatch(CPE23TYPE_REGEX, ref):
+            spdx_ref = ExternalPackageRef(
+                category=ExternalPackageRefCategory.SECURITY,
+                reference_type="cpe23Type",
+                locator=ref,
+            )
+        elif re.fullmatch(PURL_REGEX, ref):
+            spdx_ref = ExternalPackageRef(
+                category=ExternalPackageRefCategory.PACKAGE_MANAGER,
+                reference_type="purl",
+                locator=ref,
+            )
+        else:
+            log.wrn(f"Unknown external reference ({ref})")
+
+        return spdx_ref
+
     def setupModulesDocument(self, modules):
+        creation_info = CreationInfo(
+            spdx_version="SPDX-2.3",
+            spdx_id="SPDXRef-DOCUMENT",
+            name="modules-deps",
+            data_license="CC0-1.0",
+            creators=[Actor(ActorType.TOOL, "Zephyr SPDX builder", None)],
+            document_namespace=self.cfg.namespacePrefix + "/modules-deps",
+            created=datetime.now(),
+        )
+        document = Document(creation_info)
+
+
         # set up zephyr document
         cfgModuleExtRef = DocumentConfig()
         cfgModuleExtRef.name = "modules-deps"
         cfgModuleExtRef.namespace = self.cfg.namespacePrefix + "/modules-deps"
         cfgModuleExtRef.docRefID = "DocumentRef-modules-deps"
-        self.docModulesExtRefs = Document(cfgModuleExtRef)
+        self.docModulesExtRefs = DocumentZephyr(cfgModuleExtRef)
 
         for module in modules:
             module_name = module.get("name", None)
@@ -349,6 +505,31 @@ class Walker:
             if module_security:
                 module_ext_ref = module_security.get("external-references")
 
+            ext_refs = []
+            for ref in module_ext_ref:
+                ext_refs.append(self._generateExternalRef(ref))
+
+
+            package = Package(
+                name=self._generateModuleName(module_name, "-deps"),
+                spdx_id=self._generateModuleRef(module_name, "-deps"),
+                #version="2.2.1",
+                #supplier=Actor(ActorType.PERSON, "Jane Doe", "jane.doe@example.com"),
+                #originator=Actor(ActorType.ORGANIZATION, "some organization", "contact@example.com"),
+                #license_concluded=SpdxNoAssertion(),
+                #license_declared=SpdxNoAssertion(),
+                #copyright_text=SpdxNoAssertion(),
+                files_analyzed=False,
+                download_location=SpdxNoAssertion(),
+                primary_package_purpose=PackagePurpose.LIBRARY,
+                external_references=ext_refs,
+            )
+
+            document.packages.append(package)
+
+            describes_relationship = Relationship("SPDXRef-DOCUMENT", RelationshipType.DESCRIBES, self._generateModuleRef(module_name, "-deps"))
+            document.relationships.append(describes_relationship)
+
             # set up zephyr sources package
             cfgPackageModuleExtRef = PackageConfig()
             cfgPackageModuleExtRef.name = module_name + "-deps"
@@ -357,11 +538,12 @@ class Walker:
             for ref in module_ext_ref:
                 cfgPackageModuleExtRef.externalReferences.append(ref)
 
-            pkgModule = Package(cfgPackageModuleExtRef, self.docModulesExtRefs)
+            pkgModule = PackageZephyr(cfgPackageModuleExtRef, self.docModulesExtRefs)
             self.docModulesExtRefs.pkgs[pkgModule.cfg.spdxID] = pkgModule
 
             self._add_describe_relationship(self.docModulesExtRefs, cfgPackageModuleExtRef)
 
+        write_file(document, "modules-deps.spdx")
 
     # set up Documents before beginning
     def setupDocuments(self):
@@ -426,7 +608,7 @@ class Walker:
         cfg.relativeBaseDir = self.cm.paths_build
 
         # build Package
-        pkg = Package(cfg, self.docBuild)
+        pkg = PackageZephyr(cfg, self.docBuild)
 
         # add Package to build Document
         self.docBuild.pkgs[cfg.spdxID] = pkg
@@ -450,7 +632,7 @@ class Walker:
             return None
 
         # create build File
-        bf = File(self.docBuild, pkg)
+        bf = FileZephyr(self.docBuild, pkg)
         bf.abspath = artifactPath
         bf.relpath = cfgTarget.target.artifacts[0]
         # can use nameOnDisk b/c it is just the filename w/out directory paths
@@ -660,7 +842,7 @@ class Walker:
                 continue
 
             # create File and assign it to the Package and Document
-            sf = File(srcDoc, srcPkg)
+            sf = FileZephyr(srcDoc, srcPkg)
             sf.abspath = srcAbspath
             sf.relpath = os.path.relpath(srcAbspath, srcPkg.cfg.relativeBaseDir)
             filenameOnly = os.path.split(srcAbspath)[1]
@@ -705,7 +887,7 @@ class Walker:
     # Relationships, and assign them to the applicable Files / Packages
     def walkRelationships(self):
         for rlnData in self.pendingRelationships:
-            rln = Relationship()
+            rln = RelationshipZephyr()
             # get left side of relationship data
             docA, spdxIDA, rlnsA = self.getRelationshipLeft(rlnData)
             if not docA or not spdxIDA:
